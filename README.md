@@ -376,6 +376,7 @@ CONTRIBUTING + validator, a submission needs:
 
 This repo is MIT (see LICENSE, © 2026 MIT Critical Data).
 
+- First inspiration: **NVIDIA AVO reaches 100 on ARC-AGI-3** — <https://developer.nvidia.com/blog/nvidia-avo-reaches-100-on-arc-agi-3-demonstrating-a-frontier-level-general-purpose-architecture-for-long-horizon-autonomous-agents>
 - **Retrodict** (ryanbbrown/retrodict) has **no license**; its architecture is
   documented publicly in its README and is reimplemented here from scratch —
   no code or prompt text was copied.
