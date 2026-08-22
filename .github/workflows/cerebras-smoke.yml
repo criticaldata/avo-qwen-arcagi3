@@ -1,0 +1,42 @@
+name: cerebras-smoke
+
+# Live probe of the Cerebras shared-inference endpoint using the repository
+# secret C7 (a Cerebras API key). Manual dispatch only: it spends (a trivial
+# number of) real tokens. Lists the served model catalog, reports which models
+# of the experiment matrix are up (including any qwen3.8-27b style id), and
+# round-trips one tiny completion through the retrying transport.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model id for the completion probe (default: cheapest served)"
+        required: false
+        type: string
+  # Re-probe the live endpoint whenever the transport or the smoke itself
+  # changes (push events in this repo have access to the C7 secret; fork PRs
+  # do not, by GitHub's rules).
+  push:
+    paths:
+      - ".github/workflows/cerebras-smoke.yml"
+      - "scripts/cerebras_smoke.py"
+      - "src/arc3cb/transport.py"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+      - name: Cerebras live smoke
+        env:
+          # Both repos carry the key as CEREBRAS_API_KEY (preferred) and/or C7.
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY || secrets.C7 }}
+          SMOKE_MODEL: ${{ inputs.model }}
+        run: python scripts/cerebras_smoke.py

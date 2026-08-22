@@ -1,0 +1,11 @@
+# Modules that must NOT be importable inside the containment venv that runs
+# agent-authored python. arc-agi (the toolkit that downloads and runs game
+# source locally) and arcengine (the open game engine) are the packages that
+# would let agent code read or simulate the real game engine. The list below
+# extends arc3cb.tools.DEFAULT_FORBIDDEN_MODULES; verification writes
+# containment.json and local runs abort unless every import fails.
+
+forbidden_modules:
+  - arc_agi
+  - arcengine
+  - agents

@@ -1,0 +1,13 @@
+# Hard caps per run; the runner kills the run cleanly at any of them and
+# records partial results. CLI flags override these.
+#
+# Reference points: official Kaggle evaluation terminates a level at 5x the
+# human baseline; Retrodict's campaign ran with a 2000-action cap and $20-80
+# cost caps per game (with heavy prompt caching, which Cerebras does not
+# discount — expect input tokens to dominate cost here).
+
+max_actions_per_level: 1000
+max_actions_per_game: 4000
+max_tokens_per_game: 60000000
+max_usd_per_game: 25.0
+max_wall_clock_s: 0 # 0 = unlimited
