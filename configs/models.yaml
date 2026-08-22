@@ -1,0 +1,46 @@
+# Per-model configuration for the Cerebras shared tier.
+#
+# Ground truth as of 2026-08-22 (inference-docs.cerebras.ai + live public
+# catalog): the shared tier serves exactly two models — gpt-oss-120b and
+# gemma-4-31b. zai-glm-4.7 (deprecated 2026-08-17), llama3.1-8b and
+# qwen-3-235b-a22b-instruct-2507 (deprecated 2026-05-27) return 404 now.
+# Qwen 3.8 27B is announced for the shared tier on 2026-09-03 (replacing
+# gemma-4-31b); `arc3cb models` probes the live catalog at startup — never
+# trust this file over GET /v1/models.
+#
+# Prices are USD per million tokens (live public catalog). Context/output are
+# paid-tier limits; free-trial keys are capped lower (65k context) and will
+# fail the startup context check.
+
+defaults:
+  temperature: 0.7
+  max_output_tokens: 20000
+  max_tokens_param: max_completion_tokens
+  reasoning_effort_param: reasoning_effort
+  context_window: 131072
+  supports_images: never
+
+models:
+  gpt-oss-120b:
+    # ~3000 tok/s, text-only. reasoning_effort low|medium|high (default medium).
+    reasoning_effort: high
+    price_input_per_mtok: 0.35
+    price_output_per_mtok: 0.75
+
+  gemma-4-31b:
+    # ~1850 tok/s, text+vision (base64 data-URI images only). Reasoning is OFF
+    # by default; any of low/medium/high enables it (not graduated).
+    reasoning_effort: high
+    price_input_per_mtok: 0.99
+    price_output_per_mtok: 1.49
+    supports_images: probe
+
+  # Announced for the shared tier on 2026-09-03 (will replace gemma-4-31b).
+  # The exact served id is unknown until it appears in GET /v1/models — run
+  # `arc3cb models` on/after that date, then rename this key to the real slug
+  # and fill in the prices from the public catalog.
+  qwen-3.8-27b:
+    reasoning_effort: high
+    price_input_per_mtok: 0.0
+    price_output_per_mtok: 0.0
+    supports_images: probe

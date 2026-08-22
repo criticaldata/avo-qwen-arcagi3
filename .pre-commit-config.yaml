@@ -1,0 +1,14 @@
+repos:
+  - repo: local
+    hooks:
+      - id: check-secrets
+        name: scan for API keys / secrets
+        entry: python3 scripts/check_secrets.py
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: ruff
+        name: ruff lint
+        entry: ruff check
+        language: system
+        types: [python]

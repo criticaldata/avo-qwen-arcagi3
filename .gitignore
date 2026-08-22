@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# arc3cb: run artifacts, secrets, containment venv
+runs/
+.env
+.containment-venv/
+containment.json
+environment_files/
+.replay-state/
+scorecard-*.json
