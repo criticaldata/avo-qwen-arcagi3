@@ -193,6 +193,84 @@ entry exists in `configs/models.yaml`.
    One official competition-mode scorecard per campaign.
 4. **Report:** `docs/results.md` (regenerated via `arc3cb results`).
 
+## Measurement strategy and cost model
+
+### Why the experiment is shaped this way
+
+The strategy above exists to make one number — mean RHAE on the public 25 with
+an official competition-mode scorecard — as cheap, bounded, and defensible as
+possible:
+
+- **Local-first play, replay to score.** Games are played against the official
+  local engine (free, ~2,000 FPS, no idle timeouts), and the recorded actions
+  are replayed through the live API onto ONE competition-mode scorecard with
+  per-step verification. Model tokens are spent exactly once; the scorecard is
+  a verified re-execution, not a second attempt (the Retrodict-established
+  pattern, disclosed in `docs/disclosures.md`).
+- **Budget caps are the cost-control primitive.** Every run carries hard caps
+  (dollars, tokens, actions per level and per game, wall clock) and dies
+  cleanly at any of them with partial results recorded. Whatever a weak model
+  does — loop, stall, wander — the worst case per game is the cap, so the
+  campaign's worst case is `25 x cost cap`, known before the first token is
+  spent.
+- **Pilot before campaign.** Three games x the served matrix (~$10–25/game)
+  buy the per-model cost-per-level curve before committing to 25 games, and
+  decide which one or two models get the full campaign.
+- **Single run per game, everything disclosed.** No cherry-picking; restarts
+  and replays are disclosed. One scorecard per campaign.
+
+### Cost model (estimates until the pilot replaces them)
+
+Anchor: no world-model harness has published open-weight token counts, and
+NVIDIA AVO published no token/cost data at all — so the reference profile is
+Retrodict, the closest architecture with full accounting (652.5M input +
+7.4M output tokens, 7,703 actions, 25/25 games with GPT-5.6 Sol; AVO's action
+count, 6,624, is within ~15% of Retrodict's, suggesting comparable interaction
+volume). Two structural corrections when moving that profile to Cerebras:
+
+1. **No cache discount.** Retrodict's $654 leaned on 96% of input billed at
+   10% price. Cerebras prompt caching helps latency and the uncached-TPM
+   bucket only — every input token bills at full rate, and a
+   conversation-growing harness re-pays its history every call (~45–55k input
+   per invocation as the conversation approaches the 90k reset threshold, so
+   roughly $0.05/invocation on gemma-4-31b).
+2. **A 31B open-weight model is not GPT-5.6 Sol.** It needs more invocations
+   per unit progress and will fail levels the closed models finished — which
+   raises tokens per attempted level but lowers totals, because runs end at
+   budget caps instead of playing 78M-token marathons to a win.
+
+| Scenario | Assumption | Estimate |
+|---|---|---|
+| Retrodict's exact token profile on gemma-4-31b ($0.99/$1.49 per Mtok) | 652.5M in + 7.4M out, uncached | ~$657 campaign (~$26/game) |
+| **Campaign at default caps, gemma-4-31b** | $25/game cap binds after ~460–500 invocations (~23M input tok/game) | **$400–625, hard ceiling $625** |
+| Campaign at default caps, gpt-oss-120b ($0.35/$0.75) | same profile, ~1/3 the token price | ~$230 naive-transfer; same $625 ceiling, expected well under |
+| Pilot (3 games x 2 models) | default caps | **$60–150, ceiling $150** |
+| Uncapped, weak-model pessimistic | 2–3x Sol's interactions, no caps | $1.3k–2k — what the caps exist to prevent |
+
+Non-dollar constraints that bind first:
+
+- **Throughput:** paid-tier TPM is 500K (gemma) / 1M (gpt-oss), so a
+  Retrodict-scale campaign is ≥ ~22h/≥ ~11h of wall clock minimum if run
+  serially — per-token latency (~0.13s round-trips measured in the live smoke)
+  is not the bottleneck, the rate limiter is.
+- **Timing:** per Cerebras' customer email of 2026-08-21, gemma-4-31b leaves
+  the shared tier ~2026-09-03 (replaced by Qwen 3.8 27B). A gemma campaign
+  must run before then; the qwen3.8 campaign starts when `arc3cb models`
+  first lists it.
+- Free-trial keys (65k context, 5 rpm, 30K TPM) cannot run this harness;
+  see [API keys and tiers](#api-keys-and-tiers).
+
+### How measurement replaces estimation
+
+Every model call is metered at the source: `usage.jsonl` records per-call
+prompt/completion/cached/reasoning tokens, dollars (from `configs/models.yaml`
+prices), latency, and retry attempts; `metrics.json` rolls a run up (tokens,
+cost, actions, levels, stop reason, provisional RHAE). `arc3cb results`
+regenerates every table in `docs/results.md` from those artifacts alone —
+nothing is hand-entered, so the first pilot run starts overwriting this
+section's estimates with measured numbers, and the estimates above are
+falsifiable against preserved traces.
+
 ## Scoring
 
 RHAE (Relative Human Action Efficiency), implementing exactly what official
