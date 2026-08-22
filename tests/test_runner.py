@@ -308,3 +308,40 @@ def test_context_limit_error_forces_emergency_fresh_session(tmp_path):
     rebuilt = transport.requests[2]
     assert len(rebuilt) == 2
     assert "exceeded the model's context window" in rebuilt[-1]["content"]
+
+
+def test_full_game_reset_detected_and_halts_plan(tmp_path):
+    """A server-side full reset (levels drop) must halt the queue and resync."""
+
+    class FullResetEnv(MockEnv):
+        # ACTION5 stands in for a server-side full game reset (e.g. a RESET
+        # demotion edge case): levels wiped, back to the level-1 start.
+        def act(self, name, x=None, y=None):
+            if name == "ACTION5" and self.state == "NOT_FINISHED":
+                self.levels = 0
+                self.pos = self.STARTS[0]
+                return self._frame()
+            return super().act(name, x=x, y=y)
+
+    settings = RunSettings(game="mockgame", mode="mock", model=ModelConfig(id="fake-model"),
+                           budgets=Budgets())
+    transport = FakeTransport(
+        [
+            WIN_LEVEL_1,  # complete level 1 normally
+            # then a plan whose second action triggers the full reset; the
+            # trailing ACTION4 must NOT execute
+            "[ACTIONS]\nACTION6 x=30 y=30\nACTION5\nACTION4\n[/ACTIONS]",
+            WIN_LEVEL_1,  # re-complete level 1
+            WIN_LEVEL_2,
+        ]
+    )
+    runner = Runner(settings, FullResetEnv(), transport, tmp_path / "run", sandbox=FakeSandbox())
+    metrics = runner.run()
+    assert metrics["stop_reason"] == "win"
+    reinvoke = transport.requests[2][-1]["content"]
+    assert "FULL GAME RESET" in reinvoke
+    assert "levels dropped from 1 to 0" in reinvoke
+    # trailing ACTION4 was discarded: 10 (level 1) + 2 (halted plan) + 10 + 2
+    assert metrics["actions"] == 24
+    assert metrics["levels_completed"] == 2
+    assert metrics["state"] == "WIN"
