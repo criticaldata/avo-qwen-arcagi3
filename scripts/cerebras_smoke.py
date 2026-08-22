@@ -20,7 +20,12 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from arc3cb.config import load_env_file  # noqa: E402
-from arc3cb.transport import CerebrasTransport, ModelConfig, UsageMeter  # noqa: E402
+from arc3cb.transport import (  # noqa: E402
+    CerebrasApiError,
+    CerebrasTransport,
+    ModelConfig,
+    UsageMeter,
+)
 
 # The experiment matrix from the project brief; live /v1/models wins over this.
 MATRIX_CANDIDATES = [
@@ -75,9 +80,21 @@ def main() -> int:
     t = CerebrasTransport(
         ModelConfig(id=probe_id, temperature=0.0, max_output_tokens=2048), meter
     )
-    result = t.chat(
-        [{"role": "user", "content": "Reply with exactly: SMOKE_OK"}], purpose="smoke"
-    )
+    try:
+        result = t.chat(
+            [{"role": "user", "content": "Reply with exactly: SMOKE_OK"}], purpose="smoke"
+        )
+    except CerebrasApiError as e:
+        if e.status == 402:
+            print(
+                "  DIAGNOSIS: the key authenticated and the served catalog was "
+                "enumerated, but the Cerebras account has no usable credits "
+                "(HTTP 402 payment_required). Add credits / set up billing at "
+                "https://cloud.cerebras.ai — this project needs the paid "
+                "Developer tier anyway (full 131k context)."
+            )
+            return 3
+        raise
     print(f"  reply: {result.text.strip()[:200]!r}")
     print(f"  usage: prompt={result.prompt_tokens} completion={result.completion_tokens}")
     print(f"  latency: {result.latency_s:.2f}s  finish_reason: {result.finish_reason}")
