@@ -36,6 +36,7 @@ jobs:
           pip install -e .
       - name: Cerebras live smoke
         env:
-          CEREBRAS_API_KEY: ${{ secrets.C7 }}
+          # Both repos carry the key as CEREBRAS_API_KEY (preferred) and/or C7.
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY || secrets.C7 }}
           SMOKE_MODEL: ${{ inputs.model }}
         run: python scripts/cerebras_smoke.py
