@@ -167,7 +167,8 @@ Cerebras shared tier serves exactly two models:
 | model | ctx (paid) | max out | $/Mtok in/out | speed | notes |
 |---|---|---|---|---|---|
 | `gpt-oss-120b` | 131,072 | 40,960 | 0.35 / 0.75 | ~3000 tok/s | reasoning_effort low/med/high |
-| `gemma-4-31b` | 131,072 | 40,960 | 0.99 / 1.49 | ~1850 tok/s | vision; reasoning off by default |
+| `gemma-4-31b` | 131,072 | 40,960 | 0.99 / 1.49 | ~1850 tok/s | vision; reasoning off by default; **leaves the shared tier ~2026-09-03** |
+| qwen3.8-27b (announced) | TBD | TBD | TBD (est. $0.35–1.49 band) | TBD | multimodal per the announcement; arrives ~2026-09-03; placeholder config ready |
 
 `zai-glm-4.7`, `qwen-3-235b-a22b-instruct-2507`, and `llama3.1-8b` from the
 original plan were deprecated by Cerebras (2026-05-27 / 2026-08-17) and now
@@ -180,18 +181,45 @@ entry exists in `configs/models.yaml`.
 
 ## Experiment plan
 
+Two scheduling windows, forced by Cerebras' announced shared-tier swap
+(gemma-4-31b out, Qwen 3.8 27B in, ~2026-09-03, per their customer email of
+2026-08-21; the date is tentative until the catalog changes):
+
+**Window 1 — now until ~2026-09-02 (gemma-4-31b still served):**
+
 1. **Smoke:** `ls20`, `gpt-oss-120b`, local mode. Success = loop runs end to
    end, logs frames, executes a plan queue, survives a context reset, produces
    a score. (The loop itself is already exercised offline: the mock-game
-   integration tests plus a scripted-model run against the real ls20 engine.)
-2. **Pilot:** the three former preview games (`ls20`, `ft09`, `vc33`) x the
-   served matrix (gpt-oss-120b, gemma-4-31b, and qwen3.8-27b once served),
-   one run per game per model, fixed budgets. Compare RHAE, actions, tokens,
-   dollars, wall clock.
-3. **Campaign:** best one or two models across all 25 public games, single
-   run per game — no cherry-picking; infrastructure restarts are disclosed.
-   One official competition-mode scorecard per campaign.
-4. **Report:** `docs/results.md` (regenerated via `arc3cb results`).
+   integration tests plus a scripted-model run against the real ls20 engine;
+   the live transport smoke is green in CI.)
+2. **Pilot:** the three former preview games (`ls20`, `ft09`, `vc33`) x
+   gpt-oss-120b and gemma-4-31b, one run per game per model, fixed budgets
+   (~$60–150 total). Compare RHAE, actions, tokens, dollars, wall clock.
+3. **Gemma campaign (conditional, deadline-bound):** if gemma's pilot numbers
+   justify it, its 25-game campaign must finish before the swap date —
+   $400–625 at default caps, ≥ ~22 h serial under its 500K TPM limit, so the
+   go/no-go decision is needed no later than ~2026-09-01. After the swap this
+   experiment stops being possible on the shared tier.
+
+**Window 2 — from the day qwen3.8-27b first appears in `arc3cb models`
+(~2026-09-03):**
+
+4. **Qwen 3.8 27B onboarding + pilot (~1 day, ~$10–75):** rename the
+   placeholder key in `configs/models.yaml` to the served slug, fill prices
+   from the public catalog (they feed the cost meter automatically), run
+   `arc3cb probe` (context limit, reasoning controls, image support — the
+   announcement says multimodal), then the same 3-game pilot.
+5. **Headline campaign:** qwen3.8-27b across all 25 public games — the
+   marquee run of this project: the first Qwen-on-Cerebras world-model-harness
+   data point, against Duck's and Polyphony's self-hosted Qwen 3.6 results.
+   Estimated $250–650 at default caps (price-dependent, see the cost model);
+   the $625 hard ceiling holds regardless of the unknown price.
+6. **Report:** `docs/results.md` (regenerated via `arc3cb results`), one
+   official competition-mode scorecard per campaign.
+
+Steps 1–2 and 4 are also the fallback path if either window is missed: the
+harness is model-agnostic within the OpenAI-compatible catalog, so the plan
+re-anchors on whatever `arc3cb models` actually lists.
 
 ## Measurement strategy and cost model
 
@@ -244,7 +272,9 @@ volume). Two structural corrections when moving that profile to Cerebras:
 | Retrodict's exact token profile on gemma-4-31b ($0.99/$1.49 per Mtok) | 652.5M in + 7.4M out, uncached | ~$657 campaign (~$26/game) |
 | **Campaign at default caps, gemma-4-31b** | $25/game cap binds after ~460–500 invocations (~23M input tok/game) | **$400–625, hard ceiling $625** |
 | Campaign at default caps, gpt-oss-120b ($0.35/$0.75) | same profile, ~1/3 the token price | ~$230 naive-transfer; same $625 ceiling, expected well under |
+| **Campaign at default caps, qwen3.8-27b** (price unknown until served) | 27B on the shared tier: gemma-band pricing gives gemma's numbers, gpt-oss-band gives ~$230 | **$250–650 expected; the $625 ceiling holds at any price** |
 | Pilot (3 games x 2 models) | default caps | **$60–150, ceiling $150** |
+| Qwen 3.8 pilot (3 games, once served) | default caps | ~$10–75, exact the day catalog prices land |
 | Uncapped, weak-model pessimistic | 2–3x Sol's interactions, no caps | $1.3k–2k — what the caps exist to prevent |
 
 Non-dollar constraints that bind first:
@@ -255,8 +285,12 @@ Non-dollar constraints that bind first:
   is not the bottleneck, the rate limiter is.
 - **Timing:** per Cerebras' customer email of 2026-08-21, gemma-4-31b leaves
   the shared tier ~2026-09-03 (replaced by Qwen 3.8 27B). A gemma campaign
-  must run before then; the qwen3.8 campaign starts when `arc3cb models`
-  first lists it.
+  must therefore finish before then (go/no-go by ~2026-09-01 given its ≥ ~22 h
+  wall-clock floor); the qwen3.8 pilot starts the day `arc3cb models` first
+  lists the id, and its unknowns (price, context, TPM tier, reasoning
+  controls, image support) all resolve from the public catalog and one
+  `arc3cb probe` — the cost brackets above collapse to real numbers the same
+  day, before any campaign tokens are spent.
 - Free-trial keys (65k context, 5 rpm, 30K TPM) cannot run this harness;
   see [API keys and tiers](#api-keys-and-tiers).
 
