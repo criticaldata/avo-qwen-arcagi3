@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import resource
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -117,11 +118,14 @@ class Sandbox:
                 timeout=self.timeout_s,
                 preexec_fn=self._limits,
             )
+            # A CPU-bound loop trips RLIMIT_CPU (SIGXCPU) before the wall-clock
+            # timeout; report both paths as a timeout to the model.
+            cpu_killed = proc.returncode == -signal.SIGXCPU
             return SandboxResult(
                 stdout=_truncate(proc.stdout, self.max_output_chars),
                 stderr=_truncate(proc.stderr, self.max_output_chars),
                 exit_code=proc.returncode,
-                timed_out=False,
+                timed_out=cpu_killed,
             )
         except subprocess.TimeoutExpired as e:
             return SandboxResult(

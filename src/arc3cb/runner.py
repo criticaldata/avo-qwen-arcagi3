@@ -35,7 +35,7 @@ from .plan_parser import (
 )
 from .scoring import LevelResult, game_rhae
 from .tools import Sandbox
-from .transport import TransportError
+from .transport import ContextLimitError, TransportError
 
 PARSE_RETRY_LIMIT = 3
 MISMATCH_LIST_LIMIT = 5
@@ -109,6 +109,7 @@ class Runner:
         self.state = RunState()
         self._started = time.monotonic()
         self._frame: Frame | None = None
+        self._last_diffs: list | None = None
 
     # -- setup ---------------------------------------------------------------
 
@@ -141,6 +142,7 @@ class Runner:
             note=note,
             burst=frame.burst,
         )
+        self._last_diffs = diffs
         self._record(
             self.actions_path,
             {
@@ -308,7 +310,7 @@ class Runner:
 
     # -- conversation ---------------------------------------------------------
 
-    def _frame_text(self, diffs: list | None = None) -> str:
+    def _frame_text(self) -> str:
         assert self._frame is not None
         f = self._frame
         return prompts.frame_message(
@@ -319,7 +321,7 @@ class Runner:
             f.win_levels,
             f.state,
             f.available,
-            diffs=diffs,
+            diffs=self._last_diffs if self.state.frame_index > 0 else None,
         )
 
     def _playbook(self) -> str:
@@ -332,6 +334,8 @@ class Runner:
                 result = self.transport.chat(conversation, purpose="agent")
                 self.state.context_tokens = result.prompt_tokens
                 return result.text, result.finish_reason
+            except ContextLimitError:
+                raise  # handled by the main loop (emergency fresh session)
             except TransportError as e:
                 if attempt == 2:
                     raise
@@ -359,6 +363,7 @@ class Runner:
             self.env.game_id, self._frame_text(), priming_note=self.priming_note
         )
         consecutive_parse_failures = 0
+        forced_fresh = False
 
         while True:
             cap = self._budget_stop()
@@ -376,6 +381,30 @@ class Runner:
             st.invocation += 1
             try:
                 text, finish_reason = self._chat(conversation)
+                forced_fresh = False
+            except ContextLimitError as e:
+                # The retrospective token check overshot the real window:
+                # emergency compaction — rebuild from files, exactly like a
+                # planned fresh session. A second consecutive hit is terminal.
+                conversation.pop()
+                st.invocation -= 1
+                if forced_fresh:
+                    st.stop_reason = "provider_error"
+                    return self._finish(
+                        error=f"context limit persisted after a fresh session: {e}"
+                    )
+                forced_fresh = True
+                st.fresh_sessions += 1
+                self.log.mark("context limit hit; forcing emergency fresh session")
+                conversation = [{"role": "system", "content": prompts.SYSTEM_PROMPT}]
+                user_msg = prompts.fresh_session_prompt(
+                    self.env.game_id,
+                    st.frame_index,
+                    "the previous conversation exceeded the model's context window",
+                    self._playbook(),
+                    self._frame_text(),
+                )
+                continue
             except TransportError as e:
                 st.stop_reason = "provider_error"
                 return self._finish(error=str(e))

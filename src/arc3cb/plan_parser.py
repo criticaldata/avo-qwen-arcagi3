@@ -64,12 +64,21 @@ _TAG_RES = {
 
 
 def extract_blocks(text: str) -> list[Block]:
-    """All protocol blocks in the response, in order of appearance."""
+    """All protocol blocks in the response, in order of appearance.
+
+    Fenced python is extracted first and masked out before tag scanning, so an
+    [ACTIONS]/[PLAYBOOK] string appearing inside code (e.g. printed by the
+    agent's own analysis) is never mistaken for a protocol block.
+    """
     found: list[tuple[int, str, str]] = []
+    masked = list(text)
     for m in _FENCE_RE.finditer(text):
         found.append((m.start(), "python", m.group(1)))
+        for i in range(m.start(), m.end()):
+            masked[i] = " "
+    masked_text = "".join(masked)
     for kind, rx in _TAG_RES.items():
-        for m in rx.finditer(text):
+        for m in rx.finditer(masked_text):
             found.append((m.start(), kind, m.group(1).strip()))
     found.sort(key=lambda t: t[0])
     return [(kind, content) for _, kind, content in found]

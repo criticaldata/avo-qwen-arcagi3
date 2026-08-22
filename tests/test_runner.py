@@ -269,3 +269,34 @@ def test_unavailable_action_halts(tmp_path):
     runner2.run()
     retry = transport2.requests[1][-1]["content"]
     assert "unknown action 'ACTION5'" in retry
+
+
+def test_context_limit_error_forces_emergency_fresh_session(tmp_path):
+    from arc3cb.transport import ContextLimitError
+
+    class OverflowOnceTransport(FakeTransport):
+        def __init__(self, responses):
+            super().__init__(responses)
+            self.overflowed = False
+
+        def chat(self, messages, purpose="agent", max_output_tokens=None):
+            if not self.overflowed and len(self.requests) == 1:
+                self.requests.append([dict(m) for m in messages])
+                self.overflowed = True
+                raise ContextLimitError(400, "prompt exceeds maximum context length")
+            return super().chat(messages, purpose, max_output_tokens)
+
+    settings = RunSettings(game="mockgame", mode="mock", model=ModelConfig(id="fake-model"),
+                           budgets=Budgets())
+    transport = OverflowOnceTransport(
+        ["[ACTIONS]\nACTION4\n[/ACTIONS]", WIN_LEVEL_1.replace("ACTION4\n" * 9, "ACTION4\n" * 8),
+         WIN_LEVEL_2]
+    )
+    runner = Runner(settings, MockEnv(), transport, tmp_path / "run", sandbox=FakeSandbox())
+    metrics = runner.run()
+    assert metrics["stop_reason"] == "win"
+    assert metrics["fresh_sessions"] == 1
+    # The request after the overflow is a rebuilt 2-message fresh session.
+    rebuilt = transport.requests[2]
+    assert len(rebuilt) == 2
+    assert "exceeded the model's context window" in rebuilt[-1]["content"]

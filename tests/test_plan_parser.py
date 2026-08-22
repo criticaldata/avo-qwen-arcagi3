@@ -83,3 +83,13 @@ def test_check_expectations_pass():
     grid = [[0, 0], [0, 7]]
     exp = Expectation(cells=[(1, 1, 7)], levels=1, state="WIN")
     assert check_expectations(exp, grid, levels_completed=1, state="WIN") == []
+
+
+def test_extract_blocks_ignores_tags_inside_python_fences():
+    text = (
+        "```python\nprint('[ACTIONS]')\nprint('[/ACTIONS]')\n```\n"
+        "[ACTIONS]\nACTION1\n[/ACTIONS]\n"
+    )
+    blocks = extract_blocks(text)
+    assert [k for k, _ in blocks] == ["python", "actions"]
+    assert blocks[1][1] == "ACTION1"
