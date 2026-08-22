@@ -198,7 +198,11 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     metrics = runner.run()
 
-    if args.mode == "online" and client and card_id and not args.keep_card_open:
+    close_card = args.mode == "online" and client and card_id and not args.keep_card_open \
+        and not args.card_id  # never auto-close a card the user supplied
+    if args.mode == "online" and args.card_id and not args.keep_card_open:
+        print(f"card {card_id} was supplied via --card-id and is left open")
+    if close_card:
         try:
             card = client.close_scorecard(card_id)
             card.pop("api_key", None)

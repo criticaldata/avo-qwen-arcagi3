@@ -166,7 +166,7 @@ def test_python_blocks_run_in_sandbox(tmp_path):
     )
     metrics = runner.run()
     assert metrics["stop_reason"] == "win"
-    assert runner.sandbox.codes == ["print('hello')\n"]
+    assert runner.sandbox.codes == ["print('hello')"]
     reinvoke = transport.requests[1][-1]["content"]
     assert "fake-ok" in reinvoke
 
@@ -193,11 +193,15 @@ def test_context_reset_builds_fresh_session(tmp_path):
     assert "WORKING MODEL: right is safe" in fresh_request[-1]["content"]
 
 
-def test_consecutive_reset_blocked_across_plans(tmp_path):
+def test_unsafe_reset_blocked(tmp_path):
     runner, transport = make_runner(
         tmp_path,
         [
+            # A RESET as the very first action would reset the ENTIRE game.
             "[ACTIONS]\nRESET\n[/ACTIONS]",
+            # After one real action a RESET is a legal level reset...
+            "[ACTIONS]\nACTION4\nRESET\n[/ACTIONS]",
+            # ...but a second RESET right after (0 actions since) is blocked again.
             "[ACTIONS]\nRESET\n[/ACTIONS]",
             WIN_LEVEL_1,
             WIN_LEVEL_2,
@@ -205,8 +209,12 @@ def test_consecutive_reset_blocked_across_plans(tmp_path):
     )
     metrics = runner.run()
     assert metrics["stop_reason"] == "win"
-    second = transport.requests[2][-1]["content"]
-    assert "already a RESET" in second
+    first = transport.requests[1][-1]["content"]
+    assert "would reset the ENTIRE game" in first
+    third = transport.requests[3][-1]["content"]
+    assert "would reset the ENTIRE game" in third
+    # the mid-plan RESET executed (level reset), so exactly one self-reset counted
+    assert metrics["actions"] == 14  # ACTION4 + RESET + 10 + 2
 
 
 def test_parse_failure_limit_kills_run(tmp_path):
@@ -268,7 +276,7 @@ def test_unavailable_action_halts(tmp_path):
     runner2 = Runner(settings, NoAction5Env(), transport2, tmp_path / "run2", sandbox=FakeSandbox())
     runner2.run()
     retry = transport2.requests[1][-1]["content"]
-    assert "unknown action 'ACTION5'" in retry
+    assert "ACTION5 is not currently available" in retry
 
 
 def test_context_limit_error_forces_emergency_fresh_session(tmp_path):

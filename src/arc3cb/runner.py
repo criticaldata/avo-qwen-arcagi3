@@ -49,8 +49,11 @@ REINVOKE_REASONS = {
     "unavailable_action": "the next planned action was not in the available set, so the "
     "rest of the plan was discarded",
     "prediction_mismatch": "an expectation failed, so the rest of the plan was discarded",
-    "consecutive_reset": "the plan would have issued a RESET on an already-fresh attempt "
-    "(which resets the WHOLE game); the rest of the plan was discarded",
+    "unsafe_reset": "the plan would have issued a RESET with no actions taken since the "
+    "last level change, which resets the WHOLE game back to level 1; the rest of the "
+    "plan was discarded",
+    "full_reset": "the game performed a FULL reset back to level 1 (levels counter "
+    "dropped); the rest of the plan was discarded — re-derive your position from the log",
 }
 
 
@@ -63,6 +66,7 @@ class RunState:
     win_levels: int = 0
     level_start_actions: int = 0
     level_self_resets: int = 0
+    actions_since_level_change: int = 0  # non-RESET ACTIONs since the last level change
     escalation_tier: int = 0
     escalated_at_actions: int = 0
     fresh_sessions: int = 0
@@ -194,6 +198,7 @@ class Runner:
         st.levels_completed = new_levels
         st.level_start_actions = st.actions_taken
         st.level_self_resets = 0
+        st.actions_since_level_change = 0
         st.escalation_tier = 0
         st.escalated_at_actions = 0
         self.log.mark(f"level {new_levels} reached after {actions_this_level} actions")
@@ -231,12 +236,13 @@ class Runner:
             if cap:
                 return cap, feedback
             assert self._frame is not None
-            if action.name == "RESET" and st.last_executed_action == "RESET":
+            if action.name == "RESET" and st.actions_since_level_change == 0:
                 feedback.append(
-                    f"halted before step {idx + 1} ({action.describe()}): the previous "
-                    "executed action was already a RESET"
+                    f"halted before step {idx + 1} ({action.describe()}): no action has "
+                    "been taken since the last level change, so this RESET would reset "
+                    "the ENTIRE game back to level 1"
                 )
-                return "consecutive_reset", feedback
+                return "unsafe_reset", feedback
             if action.name not in set(self._frame.available) | {"RESET"}:
                 feedback.append(
                     f"halted before step {idx + 1}: {action.describe()} is not in the "
@@ -254,6 +260,9 @@ class Runner:
             st.actions_taken += 1
             if action.name == "RESET":
                 st.level_self_resets += 1
+                st.actions_since_level_change = 0  # a fresh attempt: RESET now = full reset
+            else:
+                st.actions_since_level_change += 1
             st.last_executed_action = action.name
             self._frame = frame
             st.win_levels = frame.win_levels or st.win_levels
@@ -267,10 +276,31 @@ class Runner:
                 feedback.append(f"{executed} — LEVEL COMPLETED ({frame.levels_completed}"
                                 f"/{frame.win_levels})")
                 return "level_change", feedback
+            if frame.levels_completed < prev_levels:
+                # Full game reset (should be prevented by the RESET guard, but the
+                # server has the final word): reconcile and hand control back.
+                feedback.append(
+                    f"{executed} — FULL GAME RESET: levels dropped from {prev_levels} "
+                    f"to {frame.levels_completed}"
+                )
+                st.levels_completed = frame.levels_completed
+                st.level_start_actions = st.actions_taken
+                st.level_self_resets = 0
+                st.actions_since_level_change = 0
+                st.escalation_tier = 0
+                st.escalated_at_actions = 0
+                self.log.mark(
+                    f"FULL RESET: levels dropped to {frame.levels_completed}"
+                )
+                return "full_reset", feedback
             if frame.state == "WIN":
                 self._on_level_change(max(frame.levels_completed, st.levels_completed))
                 return "win", feedback
             if frame.state == "GAME_OVER":
+                cap = self._budget_stop()
+                if cap:
+                    feedback.append(f"{executed} — GAME_OVER at a budget cap; run ends")
+                    return cap, feedback
                 feedback.append(f"{executed} — GAME_OVER; issuing recovery RESET")
                 try:
                     frame = self.env.reset()
@@ -280,6 +310,7 @@ class Runner:
                 st.frame_index += 1
                 st.actions_taken += 1  # in-play RESETs count as actions
                 st.last_executed_action = "RESET"
+                st.actions_since_level_change = 0
                 self._frame = frame
                 self._log_frame("RESET", frame, note="runner-issued recovery after GAME_OVER")
                 return "game_over", feedback
@@ -358,7 +389,8 @@ class Runner:
             st.levels_completed = frame.levels_completed
         self._log_frame("RESET", frame, note="opening reset")
 
-        conversation: list[dict] = [{"role": "system", "content": prompts.SYSTEM_PROMPT}]
+        system_text = prompts.system_prompt(self.settings.plan_max_len)
+        conversation: list[dict] = [{"role": "system", "content": system_text}]
         user_msg = prompts.initial_prompt(
             self.env.game_id, self._frame_text(), priming_note=self.priming_note
         )
@@ -396,7 +428,7 @@ class Runner:
                 forced_fresh = True
                 st.fresh_sessions += 1
                 self.log.mark("context limit hit; forcing emergency fresh session")
-                conversation = [{"role": "system", "content": prompts.SYSTEM_PROMPT}]
+                conversation = [{"role": "system", "content": system_text}]
                 user_msg = prompts.fresh_session_prompt(
                     self.env.game_id,
                     st.frame_index,
@@ -409,19 +441,6 @@ class Runner:
                 st.stop_reason = "provider_error"
                 return self._finish(error=str(e))
             conversation.append({"role": "assistant", "content": text})
-            self._record(
-                self.transcript_path,
-                {
-                    "invocation": st.invocation,
-                    "user": user_msg,
-                    "assistant": text,
-                    "finish_reason": finish_reason,
-                    "context_tokens": st.context_tokens,
-                    "escalation_tier": st.escalation_tier,
-                    "actions_taken": st.actions_taken,
-                    "levels_completed": st.levels_completed,
-                },
-            )
 
             feedback: list[str] = []
             reason = ""
@@ -456,11 +475,16 @@ class Runner:
                             plan = None
 
             ran_python = any(k == "python" for k, _ in blocks)
+            wrote_playbook = any(k == "playbook" for k, _ in blocks)
             if had_parse_error:
                 st.parse_retries += 1
                 consecutive_parse_failures += 1
             elif plan or ran_python:
                 consecutive_parse_failures = 0
+            elif wrote_playbook:
+                # A valid protocol act, but nothing happened in the game: nudge
+                # without counting toward the parse-failure kill.
+                feedback.append(prompts.playbook_only_prompt())
             else:
                 feedback.append(prompts.no_block_prompt())
                 st.parse_retries += 1
@@ -472,19 +496,36 @@ class Runner:
                 )
                 reason, plan_feedback = self._execute_plan(plan)
                 feedback.extend(plan_feedback)
-                if reason == "win":
-                    st.stop_reason = "win"
-                    break
-                if reason in (
-                    "action_cap",
-                    "level_action_cap",
-                    "token_cap",
-                    "cost_cap",
-                    "wall_clock_cap",
-                    "env_error",
-                ):
-                    st.stop_reason = reason
-                    break
+
+            self._record(
+                self.transcript_path,
+                {
+                    "invocation": st.invocation,
+                    "user": user_msg,
+                    "assistant": text,
+                    "finish_reason": finish_reason,
+                    "context_tokens": st.context_tokens,
+                    "escalation_tier": st.escalation_tier,
+                    "actions_taken": st.actions_taken,
+                    "levels_completed": st.levels_completed,
+                    "reason": reason,
+                    "feedback": feedback,
+                },
+            )
+
+            if reason == "win":
+                st.stop_reason = "win"
+                break
+            if reason in (
+                "action_cap",
+                "level_action_cap",
+                "token_cap",
+                "cost_cap",
+                "wall_clock_cap",
+                "env_error",
+            ):
+                st.stop_reason = reason
+                break
 
             if consecutive_parse_failures >= PARSE_RETRY_LIMIT:
                 st.stop_reason = "plan_parse_failed"
@@ -500,13 +541,14 @@ class Runner:
             fresh = st.context_tokens > self.settings.context_reset_input_tokens
             if fresh:
                 st.fresh_sessions += 1
-                conversation = [{"role": "system", "content": prompts.SYSTEM_PROMPT}]
+                conversation = [{"role": "system", "content": system_text}]
                 user_msg = prompts.fresh_session_prompt(
                     self.env.game_id,
                     st.frame_index,
                     reason_text,
                     self._playbook(),
                     self._frame_text(),
+                    feedback=feedback,
                 )
                 self.log.mark(
                     f"context reset at {st.context_tokens} input tokens "

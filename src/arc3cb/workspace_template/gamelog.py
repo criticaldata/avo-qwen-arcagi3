@@ -40,7 +40,7 @@ class Step:
         self.win_levels = win_levels
         self.state = state
         self.available = available  # list of action names
-        self.diff = diff  # [(x, y, old, new)] vs previous frame; [] for frame 0
+        self.diff = diff  # exact [(x, y, old, new)] vs previous frame; [] for frame 0
         self.note = note
         m = dict(_COORD_RE.findall(action))
         self.x = int(m["x"]) if "x" in m else None
@@ -96,6 +96,10 @@ def load(path="log.txt"):
             grid = prev.copy()
             for x, y, _old, new in diffs:
                 grid[y, x] = new
+        if prev is not None and prev.shape == grid.shape:
+            # Always exact, even when the log line was a summarized bbox.
+            ys, xs = np.nonzero(prev != grid)
+            diffs = [(int(x), int(y), int(prev[y, x]), int(grid[y, x])) for y, x in zip(ys, xs, strict=False)]
         steps.append(
             Step(
                 i=int(m.group("idx")),

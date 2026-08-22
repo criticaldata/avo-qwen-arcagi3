@@ -48,6 +48,24 @@ def load_actions(run_dir: Path) -> list[dict]:
     return records
 
 
+class ReplayDiverged(RuntimeError):
+    pass
+
+
+def _save_state(env: ArcOnlineEnv, state_path: Path, next_index: int) -> None:
+    """One atomic write (temp + rename) holding cookies, guid, and next_index."""
+    state = {
+        "game_id": env.game_id,
+        "card_id": env.card_id,
+        "guid": env.guid,
+        "cookies": env.client.cookies_as_dict(),
+        "next_index": next_index,
+    }
+    tmp = state_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state))
+    tmp.replace(state_path)
+
+
 def replay_game(client: ArcClient, card_id: str, run_dir: Path, strict_boards: bool, resume: bool) -> dict:
     records = load_actions(run_dir)
     game_prefix = json.loads((run_dir / "metrics.json").read_text())["game_id"].split("-")[0]
@@ -57,13 +75,22 @@ def replay_game(client: ArcClient, card_id: str, run_dir: Path, strict_boards: b
     state_path = state_dir / f"{game_prefix}.json"
 
     boards = None
-    if strict_boards:
-        boards = {e.frame_index: e.grid for e in parse_log(run_dir / "workspace" / "log.txt")}
+    log_path = run_dir / "workspace" / "log.txt"
+    if (strict_boards or resume) and log_path.exists():
+        boards = {e.frame_index: e.grid for e in parse_log(log_path)}
 
     start_index = 0
+    resumed = False
     if resume and state_path.exists():
+        saved = json.loads(state_path.read_text())
+        if saved.get("card_id") != card_id:
+            raise SystemExit(
+                f"{game_prefix}: saved replay state targets card {saved.get('card_id')}, "
+                f"not {card_id}; delete {state_path} to start over or pass the right --card-id"
+            )
         env = ArcOnlineEnv.reattach(client, state_path)
-        start_index = json.loads(state_path.read_text()).get("next_index", 0)
+        start_index = saved.get("next_index", 0)
+        resumed = True
         print(f"{game_prefix}: resuming at record {start_index}")
     else:
         env = ArcOnlineEnv(client, game_id, card_id)
@@ -72,22 +99,30 @@ def replay_game(client: ArcClient, card_id: str, run_dir: Path, strict_boards: b
         rec = records[i]
         m = _ACTION_RE.match(rec["action"])
         if not m:
-            raise SystemExit(f"{game_prefix}: unparseable recorded action {rec['action']!r}")
+            raise ReplayDiverged(f"{game_prefix}: unparseable recorded action {rec['action']!r}")
         name, x, y = m.group(1), m.group(2), m.group(3)
         frame = env.act(name, x=int(x) if x else None, y=int(y) if y else None)
         if frame.levels_completed != rec["levels_completed"] or frame.state != rec["state"]:
-            raise SystemExit(
+            raise ReplayDiverged(
                 f"{game_prefix}: DIVERGED at record {i} ({rec['action']}): recorded "
                 f"levels={rec['levels_completed']}/state={rec['state']}, live "
                 f"levels={frame.levels_completed}/state={frame.state}. The resulting "
-                "scorecard would not be a faithful re-execution; aborting this game."
+                "scorecard would not be a faithful re-execution; aborting this game. "
+                "(A record replayed right after --resume may have double-executed if "
+                "the original failure was ambiguous — restart this game on a fresh card.)"
             )
-        if boards is not None and rec["frame_index"] in boards and frame.grid != boards[rec["frame_index"]]:
-            raise SystemExit(f"{game_prefix}: board mismatch at record {i} (--strict-boards)")
-        env.save_state(state_path)
-        state = json.loads(state_path.read_text())
-        state["next_index"] = i + 1
-        state_path.write_text(json.dumps(state))
+        # The first record after a resume is the one whose original send failed
+        # ambiguously; verify its full board when the log is available, so a
+        # double-execution that happens not to move levels/state still aborts.
+        check_board = boards is not None and (
+            strict_boards or (resumed and i == start_index)
+        )
+        if check_board and rec["frame_index"] in boards and frame.grid != boards[rec["frame_index"]]:
+            raise ReplayDiverged(
+                f"{game_prefix}: board mismatch at record {i}"
+                + ("" if strict_boards else " (post-resume verification)")
+            )
+        _save_state(env, state_path, i + 1)
     print(f"{game_prefix}: replayed {len(records) - start_index} records, final "
           f"levels {records[-1]['levels_completed']}/{records[-1]['win_levels']}")
     state_path.unlink(missing_ok=True)
@@ -134,8 +169,21 @@ def main() -> int:
     if not args.runs:
         raise SystemExit("no --runs given")
 
+    failures = []
     for run_dir in args.runs:
-        replay_game(client, card_id, Path(run_dir), args.strict_boards, args.resume)
+        try:
+            replay_game(client, card_id, Path(run_dir), args.strict_boards, args.resume)
+        except ReplayDiverged as e:
+            # A divergence aborts THAT game only; the rest of the campaign
+            # continues and the card still gets closed per the flags below.
+            print(f"REPLAY FAILED: {e}", file=sys.stderr)
+            failures.append(str(run_dir))
+
+    if failures:
+        print(
+            f"{len(failures)} game(s) failed to replay: {', '.join(failures)}",
+            file=sys.stderr,
+        )
 
     if not args.keep_open:
         card = client.close_scorecard(card_id)
@@ -146,7 +194,7 @@ def main() -> int:
         print(f"https://arcprize.org/scorecards/{card_id}")
     else:
         print(f"card {card_id} left open")
-    return 0
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

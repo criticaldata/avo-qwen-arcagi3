@@ -4,8 +4,9 @@
 # catalog): the shared tier serves exactly two models — gpt-oss-120b and
 # gemma-4-31b. zai-glm-4.7 (deprecated 2026-08-17), llama3.1-8b and
 # qwen-3-235b-a22b-instruct-2507 (deprecated 2026-05-27) return 404 now.
-# Qwen 3.8 27B is announced for the shared tier on 2026-09-03 (replacing
-# gemma-4-31b); `arc3cb models` probes the live catalog at startup — never
+# Qwen 3.8 27B was announced for the shared tier on 2026-09-03 (replacing
+# gemma-4-31b) in Cerebras' customer email of 2026-08-21; not yet in the docs
+# or live catalog. `arc3cb models` probes the live catalog at startup — never
 # trust this file over GET /v1/models.
 #
 # Prices are USD per million tokens (live public catalog). Context/output are
@@ -35,7 +36,7 @@ models:
     price_output_per_mtok: 1.49
     supports_images: probe
 
-  # Announced for the shared tier on 2026-09-03 (will replace gemma-4-31b).
+  # Announced (customer email 2026-08-21) for the shared tier on 2026-09-03.
   # The exact served id is unknown until it appears in GET /v1/models — run
   # `arc3cb models` on/after that date, then rename this key to the real slug
   # and fill in the prices from the public catalog.

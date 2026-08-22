@@ -12,7 +12,7 @@ from run artifacts with `arc3cb results runs/` (or `scripts/make_results.py`)
 |---|---|---|---|---|---|---|
 | gpt-oss-120b (high) via Cerebras | — | — | — | — | — | — |
 | gemma-4-31b (high) via Cerebras | — | — | — | — | — | — |
-| qwen3.8-27b via Cerebras (once served, ETA 2026-09-03) | — | — | — | — | — | — |
+| qwen3.8-27b via Cerebras (once served; announced for 2026-09-03 by customer email) | — | — | — | — | — | — |
 
 Per-game breakdowns and per-game costs land here from `arc3cb results` once
 runs exist (metrics.json + usage.jsonl per run under `runs/`).

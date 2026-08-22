@@ -49,8 +49,14 @@ class ArcLocalEnv:
                 "(the arc-agi package requires Python >= 3.12). Alternatively use "
                 "--mode online or --mode mock."
             ) from e
+        import os
+
         self._GameAction = GameAction
         mode = OperationMode.OFFLINE if offline_only else OperationMode.NORMAL
+        # The toolkit loads .env/.env.example at import time and gives the
+        # OPERATION_MODE env var precedence over the constructor argument; pin
+        # it explicitly so --mode local can never silently play online.
+        os.environ["OPERATION_MODE"] = mode.value if hasattr(mode, "value") else str(mode)
         kwargs: dict = {"operation_mode": mode, "environments_dir": environments_dir}
         if recordings_dir:
             kwargs["recordings_dir"] = recordings_dir
@@ -136,6 +142,13 @@ class ArcLocalEnv:
         action = self._GameAction.from_name(name)
         data = {"x": int(x), "y": int(y)} if name == "ACTION6" else None
         result = self.env.step(action, data) if data else self.env.step(action)
+        if result is None:
+            # The toolkit swallows engine exceptions and returns None; treating
+            # that as a no-op frame would silently record a lie.
+            raise LocalModeError(
+                f"engine returned no frame for {name} (the toolkit swallowed an "
+                "engine exception; see its log output)"
+            )
         return self._read_frame(result)
 
     def close(self) -> dict:

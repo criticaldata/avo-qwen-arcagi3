@@ -36,11 +36,14 @@ and by studying the record of everything that has happened.
 ## Your memory: log.txt
 
 Every frame ever seen is appended to log.txt in your working directory. Each
-entry has a header line `[FRAME n | action A | levels a/b | state S]`, an
-`[AVAILABLE]` line of currently-legal actions, a `[DIFF]` line listing exactly
-which cells changed as `(x,y) old->new`, and the full grid between [GRID] and
-[/GRID] as rows of hex digits (one hex digit per cell, 0-9A-F = colors 0-15).
-Accepted plans are recorded as [PLAN] blocks; [MARK] lines note runner events.
+entry has a header line `[FRAME n | action A | levels a/b | state S]` (plus
+`| burst N` when one action produced several animation frames; only the last,
+settled one is logged), an `[AVAILABLE]` line of currently-legal actions, a
+`[DIFF]` line listing changed cells as `(x,y) old->new` (very large changes are
+summarized as a count and bounding box — the gamelog helper always computes the
+exact cell list for you), and the full grid between [GRID] and [/GRID] as rows
+of hex digits (one hex digit per cell, 0-9A-F = colors 0-15). Accepted plans
+are recorded between `[PLAN n]` and `[/PLAN]`; [MARK] lines note runner events.
 
 Do all spatial work in python over log.txt — never try to read a full grid by
 eye in your reply, and read the [DIFF] before recomputing anything. A helper
@@ -106,10 +109,13 @@ The [AVAILABLE] line lists what is currently legal. The full vocabulary:
   selection. Coordinates 0..63.
 - ACTION7 — often an undo. If it is available and you just made a mistake,
   prefer it over RESET.
-- RESET — restarts the current level and throws away the attempt's progress.
-  NEVER issue two RESETs in a row: a RESET on an already-fresh attempt resets
-  the ENTIRE game back to level 1. After GAME_OVER the runner resets for you,
-  so you never need to plan a RESET immediately after a failure.
+- RESET — restarts the CURRENT LEVEL and throws away the attempt's progress,
+  but ONLY if at least one action has been taken since the last level change.
+  A RESET on a fresh attempt (no actions taken yet on this level) resets the
+  ENTIRE game back to level 1 — the runner therefore refuses to execute a
+  RESET when no action has happened since the level started, which also means
+  never two RESETs in a row. After GAME_OVER the runner issues the recovery
+  RESET for you, so never plan a RESET immediately after a failure.
 
 ## How to reply
 
@@ -143,7 +149,8 @@ ACTION6 x=11 y=42 | expect: (11,42)=9; (11,43)=0
 ACTION5 | expect: levels=2
 [/ACTIONS]
 
-   One action per line, executed strictly in order, one at a time. The optional
+   One action per line (at most {plan_max_len} per plan), executed strictly in
+   order, one at a time. The optional
    `| expect:` clause states what the settled board must show AFTER that action:
    cell assertions `(x,y)=color`, `levels=N` (levels completed), `state=NAME`.
    The first failed expectation halts the rest of the plan immediately and you
@@ -153,10 +160,17 @@ ACTION5 | expect: levels=2
    plans. When a plan finishes, halts, or anything notable happens, you are
    re-invoked with what changed.
 
-Working without acting is fine (python first, then reply again with a plan
-after you see the output), but never do neither: every reply should end with
-either a python block or an [ACTIONS] block.
+Blocks in one reply execute in a fixed order: all python blocks run first (in
+order of appearance), a [PLAYBOOK] block is applied, and the [ACTIONS] plan —
+if any — always executes last, so a plan can never depend on the output of
+python in the same reply. Working without acting is fine (python first, then
+reply again with a plan after you see the output), but never do neither: every
+reply must contain either a python block or an [ACTIONS] block.
 """
+
+
+def system_prompt(plan_max_len: int = 20) -> str:
+    return SYSTEM_PROMPT.replace("{plan_max_len}", str(plan_max_len))
 
 
 def initial_prompt(game_ref: str, frame_text: str, priming_note: str | None = None) -> str:
@@ -193,20 +207,29 @@ def reinvoke_prompt(reason: str, feedback: list[str], frame_text: str) -> str:
 
 
 def fresh_session_prompt(
-    game_ref: str, frame_index: int, reason: str, playbook: str, frame_text: str
+    game_ref: str,
+    frame_index: int,
+    reason: str,
+    playbook: str,
+    frame_text: str,
+    feedback: list[str] | None = None,
 ) -> str:
     playbook_part = (
         f"Your predecessor's playbook.md:\n---\n{playbook}\n---"
         if playbook.strip()
         else "playbook.md is empty — your predecessor left no notes."
     )
-    return "\n\n".join(
+    parts = [
+        f"You are joining a run of game '{game_ref}' already in progress at frame "
+        f"{frame_index}. This conversation has no history: your predecessor's "
+        "conversation was discarded to fit the context window. Everything that ever "
+        "happened is in log.txt, and the curated summary is playbook.md.",
+        f"Trigger: {reason}",
+    ]
+    if feedback:
+        parts.append("Results of your predecessor's last reply:\n" + "\n".join(feedback))
+    parts.extend(
         [
-            f"You are joining a run of game '{game_ref}' already in progress at frame "
-            f"{frame_index}. This conversation has no history: your predecessor's "
-            "conversation was discarded to fit the context window. Everything that ever "
-            "happened is in log.txt, and the curated summary is playbook.md.",
-            f"Trigger: {reason}",
             playbook_part,
             frame_text,
             "Plan from the playbook instead of re-deriving what it already covers, but "
@@ -215,6 +238,7 @@ def fresh_session_prompt(
             "keep playbook.md current.",
         ]
     )
+    return "\n\n".join(parts)
 
 
 def parse_retry_prompt(error: str) -> str:
@@ -229,6 +253,13 @@ def no_block_prompt() -> str:
     return (
         "Your previous reply contained no python block and no [ACTIONS] block, so "
         "nothing happened. Every reply must end with one of the two. Reply again."
+    )
+
+
+def playbook_only_prompt() -> str:
+    return (
+        "playbook.md was updated, but the reply contained no python block and no "
+        "[ACTIONS] block, so nothing else happened. Continue with analysis or a plan."
     )
 
 

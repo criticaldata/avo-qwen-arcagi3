@@ -25,9 +25,10 @@ Facts this module encodes (verified against docs.arcprize.org and the shipped
 - Rate limit 600 requests/minute; 429 bodies say RATE_LIMIT_EXCEEDED.
 
 Retry policy: a 429 or a connection failure means the command was NOT executed,
-so those are retried with backoff. A read timeout on ``/api/cmd/*`` is
-ambiguous (the action may have landed) and is surfaced to the caller instead of
-retried — re-sending could double-execute an action.
+so those are always retried with backoff; idempotent GETs also retry 5xx. A
+read timeout or 5xx on a state-changing POST (``/api/cmd/*``, scorecard
+open/close) is ambiguous — the command may have landed before the response was
+lost — so it is surfaced to the caller instead of retried.
 """
 
 from __future__ import annotations
@@ -126,8 +127,17 @@ class ArcClient:
 
     # -- low level -----------------------------------------------------------
 
-    def _request(self, method: str, path: str, payload: dict | None = None) -> dict:
-        """Request with retries limited to cases where the command did not run."""
+    def _request(
+        self, method: str, path: str, payload: dict | None = None, retry_5xx: bool = False
+    ) -> dict:
+        """Request with retries limited to cases where the command did not run.
+
+        429 (throttled before execution) and connect failures (request never
+        sent) are always retried. 5xx is retried only when ``retry_5xx`` is set
+        — safe for idempotent GETs, but a 502/503 on a state-changing POST can
+        arrive AFTER the backend applied the command, and re-sending would
+        double-execute it.
+        """
         last_err: Exception | None = None
         for attempt in range(1, self.max_retries + 2):
             try:
@@ -143,8 +153,10 @@ class ArcClient:
             else:
                 if resp.status_code == 200:
                     return resp.json()
-                if resp.status_code == 429 or resp.status_code in (502, 503):
-                    # Throttled/rejected before execution: safe to retry.
+                retryable = resp.status_code == 429 or (
+                    retry_5xx and 500 <= resp.status_code < 600
+                )
+                if retryable:
                     last_err = ArcApiError(resp.status_code, resp.text)
                     retry_after = resp.headers.get("retry-after")
                     if retry_after:
@@ -162,7 +174,7 @@ class ArcClient:
     # -- API surface ---------------------------------------------------------
 
     def list_games(self) -> list[dict]:
-        return self._request("GET", "/api/games")
+        return self._request("GET", "/api/games", retry_5xx=True)
 
     def resolve_game_id(self, prefix: str) -> str:
         """Full versioned game_id from a name prefix (versions drift)."""
@@ -204,7 +216,7 @@ class ArcClient:
         return self._request("POST", "/api/scorecard/close", {"card_id": card_id})
 
     def get_scorecard(self, card_id: str) -> dict:
-        return self._request("GET", f"/api/scorecard/{card_id}")
+        return self._request("GET", f"/api/scorecard/{card_id}", retry_5xx=True)
 
     def cmd(
         self,

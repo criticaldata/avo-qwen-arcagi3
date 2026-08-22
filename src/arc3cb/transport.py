@@ -5,9 +5,10 @@ Design constraints this module owns:
   Retry-After;
 - token usage captured from the ``usage`` field of every response and persisted
   to ``usage.jsonl`` with a per-call dollar cost from configured prices;
-- fail-fast with an actionable message when the served context limit is below
-  the configured reset threshold (the Cerebras free tier caps context far below
-  what this harness needs — a paid-tier key is required);
+- fail-fast when the configured model's catalog context limit is below the
+  reset threshold; key-tier caps (free-trial keys get less context than the
+  catalog's paid-tier numbers) are not visible in any catalog and surface at
+  runtime as ContextLimitError with a tier explanation;
 - a startup capability probe: one tiny image-content message decides whether a
   model runs multimodal or text-only.
 
@@ -245,9 +246,12 @@ class CerebrasTransport:
         """Check the configured model is actually served; sanity-check context.
 
         Returns the served model entry (public-catalog entry when available,
-        since it carries limits). Fails fast with a tier explanation when the
-        served context limit is below ``min_context`` — running with a context
-        window smaller than the reset threshold would corrupt runs mid-game.
+        since it carries limits). Fails fast when the MODEL's catalog context
+        is below ``min_context``. Note the public catalog reports the model's
+        paid-tier limits regardless of the caller's key tier, so a free-trial
+        key's lower cap cannot be detected here — it surfaces at runtime as a
+        ContextLimitError, which the runner absorbs via an emergency fresh
+        session and, if persistent, a clear tier-explaining error.
         """
         models = self.list_models()
         by_id = {m.get("id"): m for m in models}
@@ -293,7 +297,9 @@ class CerebrasTransport:
             cfg.max_tokens_param: max_output_tokens or cfg.max_output_tokens,
         }
         if cfg.stop:
-            payload["stop"] = cfg.stop
+            # The documented schema types `stop` as a nullable string; send a
+            # bare string for a single sequence, a list only for several.
+            payload["stop"] = cfg.stop[0] if len(cfg.stop) == 1 else cfg.stop
         if cfg.reasoning_effort:
             payload[cfg.reasoning_effort_param] = cfg.reasoning_effort
         payload.update(cfg.extra_params)
@@ -338,7 +344,8 @@ class CerebrasTransport:
         }
         try:
             data, attempts = self._request("POST", "/chat/completions", payload)
-        except CerebrasApiError:
+        except TransportError:
+            # Rejected, or retries exhausted: either way, run text-only.
             return False
         usage = data.get("usage") or {}
         self.meter.record(

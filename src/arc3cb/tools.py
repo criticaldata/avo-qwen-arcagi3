@@ -7,17 +7,28 @@ attempt to import each forbidden engine module inside the venv and record that
 every one of them fails. If any succeeds, the run aborts: a local run whose
 agent code could import the engine would not be a credible result.
 
-The subprocess gets a minimal environment, a CPU/address-space rlimit, a wall
-clock timeout, and its stdout/stderr truncated before being fed back to the
-model. This is containment against accidental cheating and runaway code, not a
-security boundary against a hostile adversary; runs execute on infrastructure
-you control.
+The subprocess runs python with -E -s (env vars like PYTHONPATH ignored, user
+site disabled, so the harness's own environment cannot leak in, while the
+workspace itself stays importable for gamelog/scratch), in its own process group
+(killed wholesale on timeout), with a minimal environment, BLAS/OpenMP thread
+counts pinned to 1 (so the CPU rlimit matches wall time), a CPU/address-space
+rlimit, a wall-clock timeout, and stdout/stderr truncated before being fed back
+to the model.
+
+Honest scope: this is containment against ACCIDENTAL engine use and runaway
+code, not a security boundary against a hostile adversary. The subprocess can
+still read the filesystem (including, in local mode, the downloaded game source
+under environment_files/) and reach the network; the containment venv has pip
+removed to keep `pip install arc-agi` from working, but a determined adversary
+is out of scope. Runs execute on infrastructure you control; the audit trail
+(transcripts + log) is what makes results reviewable.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import resource
 import signal
 import subprocess
@@ -107,33 +118,47 @@ class Sandbox:
             "HOME": str(self.workdir),
             "LOG_PATH": str(self.log_path),
             "PYTHONUNBUFFERED": "1",
+            # Pin math libraries to one thread so RLIMIT_CPU tracks wall time.
+            "OMP_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "NUMEXPR_NUM_THREADS": "1",
+            "VECLIB_MAXIMUM_THREADS": "1",
         }
+        proc = subprocess.Popen(
+            [str(self.python), "-E", "-s", str(script)],
+            cwd=self.workdir,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,  # own process group: grandchildren die too
+            preexec_fn=self._limits,
+        )
         try:
-            proc = subprocess.run(
-                [str(self.python), str(script)],
-                cwd=self.workdir,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_s,
-                preexec_fn=self._limits,
-            )
-            # A CPU-bound loop trips RLIMIT_CPU (SIGXCPU) before the wall-clock
-            # timeout; report both paths as a timeout to the model.
-            cpu_killed = proc.returncode == -signal.SIGXCPU
+            stdout, stderr = proc.communicate(timeout=self.timeout_s)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, stderr = proc.communicate()
             return SandboxResult(
-                stdout=_truncate(proc.stdout, self.max_output_chars),
-                stderr=_truncate(proc.stderr, self.max_output_chars),
-                exit_code=proc.returncode,
-                timed_out=cpu_killed,
-            )
-        except subprocess.TimeoutExpired as e:
-            return SandboxResult(
-                stdout=_truncate((e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or ""), self.max_output_chars),
-                stderr=_truncate((e.stderr or b"").decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or ""), self.max_output_chars),
+                stdout=_truncate(stdout or "", self.max_output_chars),
+                stderr=_truncate(stderr or "", self.max_output_chars),
                 exit_code=-1,
                 timed_out=True,
             )
+        # A CPU-bound loop trips RLIMIT_CPU (SIGXCPU) before the wall-clock
+        # timeout; report both paths as a timeout to the model.
+        cpu_killed = proc.returncode == -signal.SIGXCPU
+        return SandboxResult(
+            stdout=_truncate(stdout, self.max_output_chars),
+            stderr=_truncate(stderr, self.max_output_chars),
+            exit_code=proc.returncode,
+            timed_out=cpu_killed,
+        )
 
 
 class ContainmentError(RuntimeError):
@@ -158,7 +183,7 @@ def verify_containment(
     breached = []
     for mod in modules:
         proc = subprocess.run(
-            [str(python), "-c", f"import {mod}"],
+            [str(python), "-I", "-c", f"import {mod}"],
             capture_output=True,
             text=True,
             timeout=60,
@@ -173,7 +198,7 @@ def verify_containment(
             breached.append(mod)
     for mod in ("numpy", "scipy", "networkx"):
         proc = subprocess.run(
-            [str(python), "-c", f"import {mod}"],
+            [str(python), "-I", "-c", f"import {mod}"],
             capture_output=True,
             text=True,
             timeout=120,

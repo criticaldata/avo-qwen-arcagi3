@@ -26,6 +26,9 @@ from dataclasses import dataclass, field
 VALID_STATES = {"NOT_PLAYED", "NOT_STARTED", "NOT_FINISHED", "WIN", "GAME_OVER"}
 
 
+FULL_VOCABULARY = frozenset({"RESET"} | {f"ACTION{i}" for i in range(1, 8)})
+
+
 class PlanParseError(ValueError):
     pass
 
@@ -66,22 +69,25 @@ _TAG_RES = {
 def extract_blocks(text: str) -> list[Block]:
     """All protocol blocks in the response, in order of appearance.
 
-    Fenced python is extracted first and masked out before tag scanning, so an
-    [ACTIONS]/[PLAYBOOK] string appearing inside code (e.g. printed by the
-    agent's own analysis) is never mistaken for a protocol block.
+    Each matched region is masked before scanning for the next kind (python
+    fences first, then [PLAYBOOK], then [ACTIONS]), so an [ACTIONS] string
+    inside agent code or inside the playbook text is never mistaken for a live
+    plan.
     """
     found: list[tuple[int, str, str]] = []
     masked = list(text)
-    for m in _FENCE_RE.finditer(text):
-        found.append((m.start(), "python", m.group(1)))
-        for i in range(m.start(), m.end()):
-            masked[i] = " "
-    masked_text = "".join(masked)
-    for kind, rx in _TAG_RES.items():
-        for m in rx.finditer(masked_text):
-            found.append((m.start(), kind, m.group(1).strip()))
+
+    def scan(kind: str, rx: re.Pattern, group: int) -> None:
+        for m in rx.finditer("".join(masked)):
+            found.append((m.start(), kind, m.group(group).strip("\n")))
+            for i in range(m.start(), m.end()):
+                masked[i] = " "
+
+    scan("python", _FENCE_RE, 1)
+    scan("playbook", _TAG_RES["playbook"], 1)
+    scan("actions", _TAG_RES["actions"], 1)
     found.sort(key=lambda t: t[0])
-    return [(kind, content) for _, kind, content in found]
+    return [(kind, content.strip()) for _, kind, content in found]
 
 
 _CELL_RE = re.compile(r"\(\s*(\d+)\s*,\s*(\d+)\s*\)\s*=\s*(\d+)")
@@ -116,8 +122,8 @@ def _parse_expectation(text: str, grid_size: int) -> Expectation:
             )
         exp.state = state
         rest = _STATE_RE.sub(" ", rest, count=1)
-    leftover = rest.replace("expect", "").replace(":", "").replace(";", "").replace(",", "")
-    leftover = leftover.strip()
+    leftover = re.sub(r"expect", "", rest, flags=re.IGNORECASE)
+    leftover = leftover.replace(":", "").replace(";", "").replace(",", "").strip()
     if leftover:
         raise PlanParseError(
             f"unrecognized expectation text {leftover!r}; use (x,y)=color, levels=N, state=NAME"
@@ -143,6 +149,11 @@ def parse_plan(
         tokens = head.replace(",", " ").split()
         name = tokens[0].upper()
         if name not in valid_actions:
+            if name in FULL_VOCABULARY:
+                raise PlanParseError(
+                    f"{name} is not currently available (line {raw_line.strip()!r}); "
+                    f"currently available: {', '.join(sorted(valid_actions))}"
+                )
             raise PlanParseError(
                 f"unknown action {tokens[0]!r} in line {raw_line.strip()!r}; "
                 f"valid actions: {', '.join(sorted(valid_actions))}"

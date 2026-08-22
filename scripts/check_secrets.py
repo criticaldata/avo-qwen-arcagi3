@@ -17,14 +17,21 @@ PATTERNS = [
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),
     # Anthropic
     re.compile(r"\bsk-ant-[A-Za-z0-9_-]{16,}"),
-    # Generic assignments of key-like env vars to non-placeholder values
+    # Generic assignments of key-like names (compound names like GITHUB_TOKEN or
+    # AGENTOPS_API_KEY included) to non-placeholder values
     re.compile(
-        r"(?i)\b(CEREBRAS_API_KEY|ARC_API_KEY|OPENAI_API_KEY|API_KEY|SECRET|TOKEN)\b\s*[=:]\s*"
+        r"(?i)[A-Z0-9_]*(?:API_?KEY|SECRET|TOKEN|PASSWORD)\b\s*[=:]\s*"
         r"['\"]?(?!\s*$)(?!\$\{?)(?!<)(?!your[-_])(?!changeme)(?!dummy)(?!test-key)(?!secrets\.)"
         r"[A-Za-z0-9_\-]{16,}"
     ),
-    # GitHub tokens
+    # UUID-shaped values assigned to api-key-ish names/headers (ARC keys are uuids)
+    re.compile(
+        r"(?i)(api[_-]?key|x-api-key)[\"']?\s*[=:]\s*[\"']?"
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    ),
+    # GitHub tokens (classic + fine-grained)
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"),
     # AWS access keys
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
 ]

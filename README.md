@@ -52,9 +52,13 @@ engineering patterns from [Tycho](https://github.com/NIMI-research/tycho):
   retrodicts every recorded frame, then search it for a route to the goal.
   Tier 2 (after another N) forces frontier enumeration.
 - **Sandboxed agent code.** Agent Python runs in a dedicated containment venv
-  with numpy/scipy/networkx and — provably — no game-engine packages:
-  `containment.json` records that `arc_agi`/`arcengine` imports fail, and the
-  run aborts if they do not.
+  with numpy/scipy/networkx and no game-engine packages: `containment.json`
+  records that `arc_agi`/`arcengine` imports fail (and pip is removed from the
+  venv), and the run aborts if they do not. Scope is honest: this contains
+  accidental engine use and runaway code (isolated mode, process-group kill,
+  rlimits) — it is not an adversarial security boundary; filesystem reads and
+  network are not blocked, and the full audit trail is what makes runs
+  reviewable.
 - **Generality.** The system prompt contains zero game-specific content — no
   game IDs, no per-game heuristics, no hand-coded mechanics. One prompt plays
   all 25 games. See [Validity](#validity).
@@ -79,7 +83,7 @@ configs/             # models.yaml, budgets.yaml, containment.yaml, human_baseli
 runs/                # one dir per run (gitignored): workspace/, transcript.jsonl,
                      # actions.jsonl, usage.jsonl, metrics.json, containment.json
 docs/                # results.md, disclosures.md
-tests/               # 60 unit + integration tests (mock game end-to-end)
+tests/               # 62 unit + integration tests (mock game end-to-end)
 ```
 
 ## Setup
@@ -101,8 +105,10 @@ cp .env.example .env               # then fill in the two keys
 - `CEREBRAS_API_KEY` — from [cloud.cerebras.ai](https://cloud.cerebras.ai).
   **A paid (Developer) tier key is required**: free-trial keys cap context at
   65k tokens and 5 requests/minute, below this harness's 90k-token reset
-  threshold and interactive cadence. The runner verifies the served context
-  limit at startup and fails fast with a tier explanation.
+  threshold and interactive cadence. Key-tier caps are not visible in any
+  catalog, so the runner verifies the model's catalog context at startup and
+  handles a runtime context-limit rejection with an emergency fresh session —
+  if it persists, the run ends with a clear tier explanation.
 - `ARC_API_KEY` — register at [arcprize.org/platform](https://arcprize.org/platform)
   (Google/GitHub login → profile → API Keys). Needed for `--mode online` and
   for replaying runs onto official scorecards. Rate limit: 600 requests/min.
@@ -165,10 +171,12 @@ Cerebras shared tier serves exactly two models:
 
 `zai-glm-4.7`, `qwen-3-235b-a22b-instruct-2507`, and `llama3.1-8b` from the
 original plan were deprecated by Cerebras (2026-05-27 / 2026-08-17) and now
-404. **Qwen 3.8 27B is announced for the shared tier on 2026-09-03**
-(replacing gemma-4-31b); `arc3cb models` and the CI smoke probe for a
-qwen3.8-style id so it can be promoted to the top of the matrix the day it
-appears — a placeholder entry exists in `configs/models.yaml`.
+404. **Qwen 3.8 27B was announced for the shared tier on 2026-09-03**
+(replacing gemma-4-31b) in Cerebras' customer email of 2026-08-21 — it does
+not yet appear in the public docs or the live catalog, so treat the date as
+tentative; `arc3cb models` and the CI smoke probe for a qwen3.8-style id so it
+can be promoted to the top of the matrix the day it appears — a placeholder
+entry exists in `configs/models.yaml`.
 
 ## Experiment plan
 
@@ -244,10 +252,13 @@ CONTRIBUTING + validator, a submission needs:
 
 - `ci.yml` — secret scan, ruff, the 60-test suite, containment venv build +
   verification. No keys needed.
-- `cerebras-smoke.yml` — manual dispatch; uses the repository secret **`C7`**
-  (a Cerebras API key) to enumerate the live served catalog, report
-  experiment-matrix availability (including the qwen3.8 probe), and round-trip
-  one tiny completion through the retrying transport with usage accounting.
+- `cerebras-smoke.yml` — manual dispatch, plus an automatic run on pushes that
+  touch the transport, the smoke script, or the workflow itself; uses the
+  repository secret **`CEREBRAS_API_KEY`** (or `C7`, both hold a Cerebras key)
+  to enumerate the live served catalog, report experiment-matrix availability
+  (including the qwen3.8 probe), and round-trip one tiny completion through
+  the retrying transport with usage accounting. Verified green on 2026-08-22:
+  auth, catalog (gpt-oss-120b + gemma-4-31b), and a 0.13s completion probe.
 
 ## Credits and licenses
 
