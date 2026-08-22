@@ -13,6 +13,14 @@ on:
         description: "Model id for the completion probe (default: cheapest served)"
         required: false
         type: string
+  # Re-probe the live endpoint whenever the transport or the smoke itself
+  # changes (push events in this repo have access to the C7 secret; fork PRs
+  # do not, by GitHub's rules).
+  push:
+    paths:
+      - ".github/workflows/cerebras-smoke.yml"
+      - "scripts/cerebras_smoke.py"
+      - "src/arc3cb/transport.py"
 
 jobs:
   smoke:
